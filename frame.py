@@ -543,7 +543,7 @@ class RockPaperScissorsGame:
                 # We should expand player_display to fill more space in Gesture Mode.
                 
                 # Dynamic resizing of label:
-                self.player_display.place(x=25, y=20, width=300, height=160) # Increase height
+                self.player_display.place(x=25, y=5, width=300, height=160) # Increase height
                 
                 target_w, target_h = 213, 160 # 4:3 ratio fitting height 160
                 
