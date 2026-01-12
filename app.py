@@ -26,6 +26,52 @@ GESTURE_ID_ROCK = 5
 GESTURE_ID_SCISSORS = 6
 GESTURE_ID_NONE = -1 # 未识别/无特殊手势
 
+class GestureRecognizer:
+    def __init__(self, static_image_mode=False, max_num_hands=1, 
+                 min_detection_confidence=0.7, min_tracking_confidence=0.5):
+        self.hands = mp.solutions.hands.Hands(
+            static_image_mode=static_image_mode,
+            max_num_hands=max_num_hands,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        )
+        self.keypoint_classifier = KeyPointClassifier()
+
+    def get_gesture(self, image, flip=True):
+        """
+        Recognize gesture from an image.
+        :param image: OpenCV BGR image
+        :param flip: Whether to flip the image horizontally (mirror mode)
+        :return: Gesture ID
+        """
+        if flip:
+            image = cv.flip(image, 1)
+        
+        # 検出実施
+        image_rgb = cv.cvtColor(image, cv.COLOR_BGR2RGB)
+        image_rgb.flags.writeable = False
+        results = self.hands.process(image_rgb)
+        
+        if results.multi_hand_landmarks is not None:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # ランドマークの計算
+                landmark_list = calc_landmark_list(image, hand_landmarks)
+
+                # 相対座標・正規化座標への変換
+                pre_processed_landmark_list = pre_process_landmark(landmark_list)
+
+                # ハンドサイン分類
+                hand_sign_id = self.keypoint_classifier(pre_processed_landmark_list)
+                
+                # RPS分類
+                rps_result = calc_rps(landmark_list)
+
+                # 优先显示规则识别的特殊手势(OK/RPS)，如果没有则显示模型识别的基础手势
+                current_gesture_id = rps_result if rps_result != GESTURE_ID_NONE else hand_sign_id
+                return current_gesture_id
+                
+        return GESTURE_ID_NONE
+
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -181,8 +227,8 @@ def main():
 
                 # 打印手势ID
                 # 优先显示规则识别的特殊手势(OK/RPS)，如果没有则显示模型识别的基础手势
-                current_gesture_id = rps_result if rps_result != GESTURE_ID_NONE else hand_sign_id
-                print(f"Gesture ID: {current_gesture_id}")
+                # current_gesture_id = rps_result if rps_result != GESTURE_ID_NONE else hand_sign_id
+                # print(f"Gesture ID: {current_gesture_id}")
 
                 # フィンガージェスチャー分類
                 finger_gesture_id = 0
