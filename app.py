@@ -16,6 +16,62 @@ from model import KeyPointClassifier
 from model import PointHistoryClassifier
 
 
+# 手势ID定义
+GESTURE_ID_OPEN = 0
+GESTURE_ID_CLOSE = 1
+GESTURE_ID_POINTER = 2
+GESTURE_ID_OK = 3
+GESTURE_ID_PAPER = 4
+GESTURE_ID_ROCK = 5
+GESTURE_ID_SCISSORS = 6
+GESTURE_ID_NONE = -1 # 未识别/无特殊手势
+
+class GestureRecognizer:
+    def __init__(self, static_image_mode=False, max_num_hands=1, 
+                 min_detection_confidence=0.7, min_tracking_confidence=0.5):
+        self.hands = mp.solutions.hands.Hands(
+            static_image_mode=static_image_mode,
+            max_num_hands=max_num_hands,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+        )
+        self.keypoint_classifier = KeyPointClassifier()
+
+    def get_gesture(self, image, flip=True):
+        """
+        Recognize gesture from an image.
+        :param image: OpenCV BGR image
+        :param flip: Whether to flip the image horizontally (mirror mode)
+        :return: Gesture ID
+        """
+        if flip:
+            image = cv.flip(image, 1)
+        
+        # 検出実施
+        image_rgb = cv.cvtColor(image, cv.COLOR_BGR2RGB)
+        image_rgb.flags.writeable = False
+        results = self.hands.process(image_rgb)
+        
+        if results.multi_hand_landmarks is not None:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # ランドマークの計算
+                landmark_list = calc_landmark_list(image, hand_landmarks)
+
+                # 相対座標・正規化座標への変換
+                pre_processed_landmark_list = pre_process_landmark(landmark_list)
+
+                # ハンドサイン分類
+                hand_sign_id = self.keypoint_classifier(pre_processed_landmark_list)
+                
+                # RPS分類
+                rps_result = calc_rps(landmark_list)
+
+                # 优先显示规则识别的特殊手势(OK/RPS)，如果没有则显示模型识别的基础手势
+                current_gesture_id = rps_result if rps_result != GESTURE_ID_NONE else hand_sign_id
+                return current_gesture_id
+                
+        return GESTURE_ID_NONE
+
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -99,6 +155,20 @@ def main():
     #  ########################################################################
     mode = 0
 
+    cv.namedWindow('Hand Gesture Recognition')
+
+    # 手勢ID对应的标签文本
+    gesture_labels = {
+        GESTURE_ID_OPEN: "Open",
+        GESTURE_ID_CLOSE: "Close",
+        GESTURE_ID_POINTER: "Pointer",
+        GESTURE_ID_OK: "OK",
+        GESTURE_ID_PAPER: "Paper",
+        GESTURE_ID_ROCK: "Rock",
+        GESTURE_ID_SCISSORS: "Scissors",
+        GESTURE_ID_NONE: ""
+    }
+
     while True:
         fps = cvFpsCalc.get()
 
@@ -106,6 +176,11 @@ def main():
         key = cv.waitKey(10)
         if key == 27:  # ESC
             break
+        
+        # 画面右上の×ボタン押下で終了
+        if cv.getWindowProperty('Hand Gesture Recognition', cv.WND_PROP_VISIBLE) < 1:
+            break
+
         number, mode = select_mode(key, mode)
 
         # カメラキャプチャ #####################################################
@@ -146,6 +221,14 @@ def main():
                     point_history.append(landmark_list[8])  # 人差指座標
                 else:
                     point_history.append([0, 0])
+                
+                # RPS分類
+                rps_result = calc_rps(landmark_list)
+
+                # 打印手势ID
+                # 优先显示规则识别的特殊手势(OK/RPS)，如果没有则显示模型识别的基础手势
+                # current_gesture_id = rps_result if rps_result != GESTURE_ID_NONE else hand_sign_id
+                # print(f"Gesture ID: {current_gesture_id}")
 
                 # フィンガージェスチャー分類
                 finger_gesture_id = 0
@@ -162,11 +245,16 @@ def main():
                 # 描画
                 debug_image = draw_bounding_rect(use_brect, debug_image, brect)
                 debug_image = draw_landmarks(debug_image, landmark_list)
+                
+                info_text = keypoint_classifier_labels[hand_sign_id]
+                if rps_result != GESTURE_ID_NONE:
+                     info_text += ":" + gesture_labels.get(rps_result, "")
+
                 debug_image = draw_info_text(
                     debug_image,
                     brect,
                     handedness,
-                    keypoint_classifier_labels[hand_sign_id],
+                    info_text,
                     point_history_classifier_labels[most_common_fg_id[0][0]],
                 )
         else:
@@ -493,6 +581,47 @@ def draw_bounding_rect(use_brect, image, brect):
     return image
 
 
+def calc_rps(landmark_list):
+    # 手首の座標
+    wrist = np.array(landmark_list[0])
+    
+    # 指先と第2関節（親指は第1関節）の座標
+    thumb_tip = np.array(landmark_list[4])
+    thumb_ip = np.array(landmark_list[2]) # MCP
+    
+    index_tip = np.array(landmark_list[8])
+    index_pip = np.array(landmark_list[6])
+    
+    middle_tip = np.array(landmark_list[12])
+    middle_pip = np.array(landmark_list[10])
+    
+    ring_tip = np.array(landmark_list[16])
+    ring_pip = np.array(landmark_list[14])
+    
+    pinky_tip = np.array(landmark_list[20])
+    pinky_pip = np.array(landmark_list[18])
+    
+    # 指が伸びているか判定 (手首からの距離で比較)
+    thumb_open = np.linalg.norm(thumb_tip - wrist) > np.linalg.norm(thumb_ip - wrist)
+    index_open = np.linalg.norm(index_tip - wrist) > np.linalg.norm(index_pip - wrist)
+    middle_open = np.linalg.norm(middle_tip - wrist) > np.linalg.norm(middle_pip - wrist)
+    ring_open = np.linalg.norm(ring_tip - wrist) > np.linalg.norm(ring_pip - wrist)
+    pinky_open = np.linalg.norm(pinky_tip - wrist) > np.linalg.norm(pinky_pip - wrist)
+    
+    # OKサイン判定 (親指と人差指がくっついている & 他の指が開いている)
+    thumb_index_dist = np.linalg.norm(thumb_tip - index_tip)
+    if thumb_index_dist < 40 and middle_open and ring_open and pinky_open: # 閾値は調整が必要かもしれません
+        return GESTURE_ID_OK
+
+    if index_open and middle_open and ring_open and pinky_open:
+        return GESTURE_ID_PAPER
+    elif index_open and middle_open and not ring_open and not pinky_open:
+        return GESTURE_ID_SCISSORS
+    elif not index_open and not middle_open and not ring_open and not pinky_open:
+        return GESTURE_ID_ROCK
+    else:
+        return GESTURE_ID_NONE
+
 def draw_info_text(image, brect, handedness, hand_sign_text,
                    finger_gesture_text):
     cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22),
@@ -501,8 +630,10 @@ def draw_info_text(image, brect, handedness, hand_sign_text,
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
         info_text = info_text + ':' + hand_sign_text
+    
     cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
                cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
+
 
     if finger_gesture_text != "":
         cv.putText(image, "Finger Gesture:" + finger_gesture_text, (10, 60),
@@ -543,3 +674,4 @@ def draw_info(image, fps, mode, number):
 
 if __name__ == '__main__':
     main()
+
